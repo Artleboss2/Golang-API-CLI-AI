@@ -3,7 +3,6 @@ package skills
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -14,24 +13,12 @@ type Skill struct {
 	Prompt      string
 }
 
-func cliDir() string {
-	exe, err := os.Executable()
-	if err == nil {
-		return filepath.Dir(exe)
-	}
-	self, err := exec.LookPath(os.Args[0])
-	if err == nil {
-		abs, err := filepath.Abs(self)
-		if err == nil {
-			return filepath.Dir(abs)
-		}
-	}
-	abs, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-	return abs
-}
-
 func Dir() (string, error) {
-	return filepath.Join(cliDir(), "skills"), nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("répertoire home introuvable : %w", err)
+	}
+	return filepath.Join(home, "NIM_CLI", "skills"), nil
 }
 
 func Load(name string) (*Skill, error) {
