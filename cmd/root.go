@@ -29,6 +29,7 @@ func init() {
 	rootCmd.AddCommand(askCmd)
 	rootCmd.AddCommand(modelsCmd)
 	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(skillsCmd)
 }
 
 func initConfig() {
@@ -54,6 +55,7 @@ func printQuickHelp() {
 		{"nim chat", "Démarrer une session de chat interactive"},
 		{"nim ask <question>", "Poser une question rapide sans mode interactif"},
 		{"nim models", "Lister les modèles disponibles"},
+		{"nim skills", "Gérer les skills de l'assistant"},
 		{"nim config", "Afficher et modifier la configuration"},
 	}
 
