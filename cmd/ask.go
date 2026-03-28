@@ -7,6 +7,9 @@ import (
 	"github.com/spf13/cobra"
 	nimapi "github.com/user/nvidia-nim-cli/internal/api"
 	"github.com/user/nvidia-nim-cli/internal/config"
+	"github.com/user/nvidia-nim-cli/internal/filewriter"
+	"github.com/user/nvidia-nim-cli/internal/skills"
+	"github.com/user/nvidia-nim-cli/internal/titler"
 	"github.com/user/nvidia-nim-cli/internal/ui"
 	"github.com/user/nvidia-nim-cli/pkg/models"
 )
@@ -30,6 +33,7 @@ var (
 	askMaxTok   int
 	askSystem   string
 	askNoStream bool
+	askSkills   []string
 )
 
 func init() {
@@ -38,6 +42,7 @@ func init() {
 	askCmd.Flags().IntVar(&askMaxTok, "max-tokens", 0, "Nombre maximum de tokens")
 	askCmd.Flags().StringVarP(&askSystem, "system", "s", "", "Message système personnalisé")
 	askCmd.Flags().BoolVar(&askNoStream, "no-stream", false, "Désactiver le streaming")
+	askCmd.Flags().StringSliceVarP(&askSkills, "skill", "k", nil, "Skills à activer")
 }
 
 func runAsk(cmd *cobra.Command, args []string) error {
@@ -68,8 +73,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	systemMsg := askSystem
 	if systemMsg == "" {
-		systemMsg = "Tu es un assistant IA utile et concis. Réponds en français sauf si la question est dans une autre langue. Sois précis et direct."
+		systemMsg = buildAskSystemPrompt(askSkills)
 	}
+
+	sessionTitle := titler.Fallback()
+	sessionDir := filewriter.SessionDir(sessionTitle)
 
 	client := nimapi.NewClient(config.GetAPIKey())
 
@@ -92,26 +100,44 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	if useStream {
-		return sendStreamingAsk(client, req)
+		return sendStreamingAsk(client, req, sessionDir)
 	}
-	return sendStandardAsk(client, req)
+	return sendStandardAsk(client, req, sessionDir)
 }
 
-func sendStreamingAsk(client *nimapi.Client, req *nimapi.ChatRequest) error {
+func buildAskSystemPrompt(activeSkills []string) string {
+	base := `Tu es un assistant IA utile et concis. Réponds en français sauf si la question est dans une autre langue. Sois précis et direct.
+
+Tu peux créer des fichiers directement sur le PC de l'utilisateur avec ce format :
+<file:nom_du_fichier.ext>
+contenu du fichier
+</file>`
+
+	addendum := skills.BuildSystemAddendum(activeSkills)
+	return base + addendum
+}
+
+func sendStreamingAsk(client *nimapi.Client, req *nimapi.ChatRequest, sessionDir string) error {
 	tokenChan := make(chan string, 100)
 	errChan := make(chan error, 1)
 
 	go client.StreamComplete(req, tokenChan, errChan)
+
+	var sb strings.Builder
 
 	for {
 		select {
 		case token, ok := <-tokenChan:
 			if !ok {
 				fmt.Println()
+				fullResponse := sb.String()
+				_, createdFiles := filewriter.ExtractAndWrite(fullResponse, sessionDir)
+				printCreatedFiles(createdFiles)
 				fmt.Println()
 				return nil
 			}
 			fmt.Print(ui.AIMessageStyle.Render(token))
+			sb.WriteString(token)
 		case err := <-errChan:
 			if err != nil {
 				fmt.Println()
@@ -121,7 +147,7 @@ func sendStreamingAsk(client *nimapi.Client, req *nimapi.ChatRequest) error {
 	}
 }
 
-func sendStandardAsk(client *nimapi.Client, req *nimapi.ChatRequest) error {
+func sendStandardAsk(client *nimapi.Client, req *nimapi.ChatRequest, sessionDir string) error {
 	spinner := ui.NewSpinner("Génération de la réponse...")
 	spinner.Start()
 
@@ -132,18 +158,25 @@ func sendStandardAsk(client *nimapi.Client, req *nimapi.ChatRequest) error {
 	}
 	spinner.Stop("")
 
-	if len(resp.Choices) > 0 {
-		fmt.Println(ui.AIMessageStyle.Render(resp.Choices[0].Message.Content))
-		fmt.Println()
+	if len(resp.Choices) == 0 {
+		return nil
+	}
 
-		if resp.Usage.TotalTokens > 0 {
-			fmt.Println(ui.InfoStyle.Render(fmt.Sprintf(
-				"Tokens utilisés : %d (prompt: %d, réponse: %d)",
-				resp.Usage.TotalTokens,
-				resp.Usage.PromptTokens,
-				resp.Usage.CompletionTokens,
-			)))
-		}
+	raw := resp.Choices[0].Message.Content
+	cleanResponse, createdFiles := filewriter.ExtractAndWrite(raw, sessionDir)
+
+	fmt.Println(ui.AIMessageStyle.Render(cleanResponse))
+	fmt.Println()
+
+	printCreatedFiles(createdFiles)
+
+	if resp.Usage.TotalTokens > 0 {
+		fmt.Println(ui.InfoStyle.Render(fmt.Sprintf(
+			"Tokens utilisés : %d (prompt: %d, réponse: %d)",
+			resp.Usage.TotalTokens,
+			resp.Usage.PromptTokens,
+			resp.Usage.CompletionTokens,
+		)))
 	}
 
 	return nil
