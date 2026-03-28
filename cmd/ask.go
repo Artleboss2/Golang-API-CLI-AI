@@ -147,6 +147,20 @@ func sendStreamingAsk(client *nimapi.Client, req *nimapi.ChatRequest, sessionDir
 	}
 }
 
+func printCreatedFiles(files []filewriter.FileResult) {
+	if len(files) == 0 {
+		return
+	}
+	fmt.Println()
+	for _, f := range files {
+		if f.Err != nil {
+			ui.PrintError(fmt.Sprintf("Fichier '%s' — %s", f.Name, f.Err.Error()))
+		} else {
+			ui.PrintSuccess(fmt.Sprintf("Fichier créé : %s", f.AbsPath))
+		}
+	}
+}
+
 func sendStandardAsk(client *nimapi.Client, req *nimapi.ChatRequest, sessionDir string) error {
 	spinner := ui.NewSpinner("Génération de la réponse...")
 	spinner.Start()
