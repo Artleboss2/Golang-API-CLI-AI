@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,11 +21,8 @@ import (
 var chatCmd = &cobra.Command{
 	Use:   "chat",
 	Short: "Démarrer une session de chat interactive avec un modèle NIM",
-	Long: `Lance une session de chat interactive avec historique de conversation.
-
-Le modèle se souvient de tout le contexte de la session.
-Tapez '/help' dans le chat pour voir les commandes disponibles.`,
-	RunE: runChat,
+	Long:  `Lance une session de chat interactive avec historique de conversation.`,
+	RunE:  runChat,
 }
 
 var (
@@ -32,7 +30,6 @@ var (
 	chatSystem      string
 	chatStream      bool
 	chatTemp        float64
-	chatSkills      []string
 	chatNoAutoTitle bool
 )
 
@@ -41,7 +38,6 @@ func init() {
 	chatCmd.Flags().StringVarP(&chatSystem, "system", "s", "", "Message système personnalisé")
 	chatCmd.Flags().BoolVar(&chatStream, "stream", true, "Activer le streaming des réponses")
 	chatCmd.Flags().Float64VarP(&chatTemp, "temperature", "t", -1, "Température (0.0–1.0)")
-	chatCmd.Flags().StringSliceVarP(&chatSkills, "skill", "k", nil, "Skills à activer (ex: -k python -k tests)")
 	chatCmd.Flags().BoolVar(&chatNoAutoTitle, "no-title", false, "Désactiver le titre automatique")
 }
 
@@ -76,6 +72,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 		temperature = config.GetTemperature()
 	}
 
+	selectedSkills, err := promptSkillSelection()
+	if err != nil {
+		return err
+	}
+
 	session := &ChatSession{
 		client:       nimapi.NewClient(config.GetAPIKey()),
 		model:        model,
@@ -83,7 +84,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		temp:         temperature,
 		started:      time.Now(),
 		title:        titler.Fallback(),
-		activeSkills: chatSkills,
+		activeSkills: selectedSkills,
 	}
 
 	session.sessionDir = filewriter.SessionDir(session.title)
@@ -100,17 +101,43 @@ func runChat(cmd *cobra.Command, args []string) error {
 	return session.run()
 }
 
+func promptSkillSelection() ([]string, error) {
+	allSkills, err := skills.List()
+	if err != nil || len(allSkills) == 0 {
+		return nil, nil
+	}
+
+	items := make([]ui.MenuItem, len(allSkills))
+	for i, sk := range allSkills {
+		desc := sk.Meta.Description
+		if sk.Meta.Category != "" {
+			desc = "[" + sk.Meta.Category + "] " + desc
+		}
+		items[i] = ui.MenuItem{
+			ID:    sk.Meta.Name,
+			Label: sk.Meta.Name,
+			Desc:  desc,
+		}
+	}
+
+	selected, escaped := ui.RunMultiSelect("Sélectionner les skills à activer (optionnel)", items)
+	if escaped {
+		return nil, nil
+	}
+	return selected, nil
+}
+
 func buildSystemPrompt(activeSkills []string) string {
 	base := `Tu es un assistant IA intelligent et concis. Réponds en français sauf si l'utilisateur parle dans une autre langue. Sois précis, utile et professionnel.
 
-Tu peux créer des fichiers directement sur le PC de l'utilisateur en utilisant ce format exact :
+Tu peux créer des fichiers directement sur le PC de l'utilisateur avec ce format exact :
 <file:nom_du_fichier.ext>
 contenu du fichier
 </file>
 
 Règles de création de fichiers :
 1. Utilise ce format UNIQUEMENT quand l'utilisateur demande de créer, écrire ou générer un fichier.
-2. Tu peux inclure des sous-dossiers dans le nom : <file:src/main.go>
+2. Tu peux inclure des sous-dossiers : <file:src/main.go>
 3. Tu peux créer plusieurs fichiers dans une seule réponse.
 4. Le contenu entre les balises est écrit tel quel sur le disque.
 5. Après les blocs <file:...>, explique brièvement ce que tu as créé.`
@@ -123,7 +150,7 @@ func (s *ChatSession) run() error {
 	fmt.Println()
 	fmt.Println(ui.SmallBanner(models.GetDisplayName(s.model)))
 	fmt.Println()
-	printChatWelcome(s.activeSkills)
+	s.printWelcome()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -137,6 +164,17 @@ func (s *ChatSession) run() error {
 
 		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
+			continue
+		}
+
+		if input == "/" {
+			chosen, escaped := s.showCommandMenu()
+			if escaped || chosen == "" {
+				continue
+			}
+			if s.handleCommand(chosen) {
+				break
+			}
 			continue
 		}
 
@@ -156,11 +194,23 @@ func (s *ChatSession) run() error {
 	return nil
 }
 
+func (s *ChatSession) showCommandMenu() (string, bool) {
+	items := []ui.CommandMenuItem{
+		{Key: "/skill", Label: "Gérer les skills", Desc: "Ajouter ou retirer des skills"},
+		{Key: "/model", Label: "Changer de modèle", Desc: "Voir ou changer le modèle actif"},
+		{Key: "/stream", Label: "Toggle streaming", Desc: "Activer / désactiver le streaming"},
+		{Key: "/clear", Label: "Effacer l'historique", Desc: "Recommencer la conversation"},
+		{Key: "/history", Label: "Voir l'historique", Desc: "Afficher les messages de la session"},
+		{Key: "/save", Label: "Sauvegarder", Desc: "Enregistrer l'historique dans un fichier"},
+		{Key: "/title", Label: "Titre & dossier", Desc: "Afficher le titre et le dossier de session"},
+		{Key: "/system", Label: "Message système", Desc: "Voir ou modifier le prompt système"},
+		{Key: "/quit", Label: "Quitter", Desc: "Terminer la session"},
+	}
+	return ui.RunCommandMenu(items)
+}
+
 func (s *ChatSession) sendMessage(content string) error {
-	s.history = append(s.history, nimapi.Message{
-		Role:    "user",
-		Content: content,
-	})
+	s.history = append(s.history, nimapi.Message{Role: "user", Content: content})
 	s.msgCount++
 
 	if !s.titleSet && !chatNoAutoTitle && s.msgCount == 1 {
@@ -201,15 +251,12 @@ func (s *ChatSession) sendMessage(content string) error {
 	printCreatedFiles(createdFiles)
 
 	if cleanResponse != "" {
-		s.history = append(s.history, nimapi.Message{
-			Role:    "assistant",
-			Content: cleanResponse,
-		})
+		s.history = append(s.history, nimapi.Message{Role: "assistant", Content: cleanResponse})
 	}
 
 	fmt.Printf("\n%s %s\n",
 		ui.TimestampStyle.Render(ui.FormatTimestamp(time.Now())),
-		ui.InfoStyle.Render(fmt.Sprintf("│ Message #%d │ Fichiers : %s", s.msgCount, s.sessionDir)),
+		ui.InfoStyle.Render(fmt.Sprintf("│ Message #%d │ Dossier : %s", s.msgCount, s.sessionDir)),
 	)
 
 	return nil
@@ -272,21 +319,21 @@ func (s *ChatSession) resolveTitle(firstMsg string) {
 
 func (s *ChatSession) handleCommand(cmd string) bool {
 	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return false
+	}
 	command := strings.ToLower(parts[0])
 
 	switch command {
 	case "/quit", "/exit", "/q":
 		return true
 
-	case "/help", "/h":
-		printChatHelp()
-
 	case "/clear", "/cls":
 		system := s.history[0]
 		s.history = []nimapi.Message{system}
 		s.msgCount = 0
 		s.titleSet = false
-		ui.PrintSuccess("Historique effacé. Nouvelle conversation démarrée.")
+		ui.PrintSuccess("Historique effacé.")
 
 	case "/history":
 		s.printHistory()
@@ -305,11 +352,11 @@ func (s *ChatSession) handleCommand(cmd string) bool {
 		if s.stream {
 			status = "activé"
 		}
-		ui.PrintSuccess("Mode streaming " + status)
+		ui.PrintSuccess("Streaming " + status)
 
 	case "/save":
 		if err := s.saveHistory(); err != nil {
-			ui.PrintError("Impossible de sauvegarder : " + err.Error())
+			ui.PrintError("Sauvegarde échouée : " + err.Error())
 		} else {
 			ui.PrintSuccess("Historique sauvegardé dans " + s.sessionDir)
 		}
@@ -328,165 +375,66 @@ func (s *ChatSession) handleCommand(cmd string) bool {
 	case "/title":
 		fmt.Println(ui.InfoStyle.Render("Titre   : ") + ui.ModelStyle.Render(s.title))
 		fmt.Println(ui.InfoStyle.Render("Dossier : ") + s.sessionDir)
-
-	default:
-		ui.PrintWarning("Commande inconnue : " + cmd + ". Tapez /help pour la liste.")
 	}
 
 	return false
 }
 
 func (s *ChatSession) handleSkillCommand(parts []string) {
-	if len(parts) < 2 {
-		if len(s.activeSkills) == 0 {
-			fmt.Println(ui.InfoStyle.Render("Aucun skill actif."))
-		} else {
-			fmt.Println(ui.InfoStyle.Render("Skills actifs : ") + strings.Join(s.activeSkills, ", "))
-		}
+	allSkills, err := skills.List()
+	if err != nil {
+		ui.PrintError(err.Error())
 		return
 	}
 
-	sub := strings.ToLower(parts[1])
-	switch sub {
-	case "add":
-		if len(parts) < 3 {
-			ui.PrintError("Usage : /skill add <nom>")
-			return
-		}
-		name := parts[2]
-		sk, err := skills.Load(name)
-		if err != nil {
-			ui.PrintError(err.Error())
-			return
-		}
-		for _, existing := range s.activeSkills {
-			if existing == name {
-				ui.PrintWarning("Skill déjà actif : " + name)
-				return
-			}
-		}
-		s.activeSkills = append(s.activeSkills, name)
-		s.history[0] = nimapi.Message{
-			Role:    "system",
-			Content: buildSystemPrompt(s.activeSkills),
-		}
-		ui.PrintSuccess("Skill activé : " + sk.Name + " — " + sk.Description)
-
-	case "remove", "rm":
-		if len(parts) < 3 {
-			ui.PrintError("Usage : /skill remove <nom>")
-			return
-		}
-		name := parts[2]
-		newSkills := make([]string, 0, len(s.activeSkills))
-		found := false
-		for _, sk := range s.activeSkills {
-			if sk == name {
-				found = true
-				continue
-			}
-			newSkills = append(newSkills, sk)
-		}
-		if !found {
-			ui.PrintWarning("Skill non actif : " + name)
-			return
-		}
-		s.activeSkills = newSkills
-		s.history[0] = nimapi.Message{
-			Role:    "system",
-			Content: buildSystemPrompt(s.activeSkills),
-		}
-		ui.PrintSuccess("Skill désactivé : " + name)
-
-	case "list":
-		allSkills, err := skills.List()
-		if err != nil {
-			ui.PrintError(err.Error())
-			return
-		}
-		if len(allSkills) == 0 {
-			dir, _ := skills.Dir()
-			fmt.Println(ui.InfoStyle.Render("Aucun skill trouvé dans " + dir))
-			return
-		}
-		fmt.Println()
-		fmt.Println(ui.SectionTitleStyle.Render("  Skills disponibles"))
-		fmt.Println(ui.Divider(50))
-		for _, sk := range allSkills {
-			active := "  "
-			for _, a := range s.activeSkills {
-				if a == sk.Name {
-					active = ui.SuccessStyle.Render("✓ ")
-					break
-				}
-			}
-			fmt.Printf("%s%s  %s\n",
-				active,
-				ui.CommandStyle.Render(fmt.Sprintf("%-20s", sk.Name)),
-				ui.InfoStyle.Render(sk.Description),
-			)
-		}
-		fmt.Println()
-
-	default:
-		ui.PrintWarning("Sous-commande inconnue. Usage : /skill [add|remove|list]")
-	}
-}
-
-func printCreatedFiles(files []filewriter.FileResult) {
-	if len(files) == 0 {
+	if len(allSkills) == 0 {
+		base, _ := skills.BaseDir()
+		ui.PrintWarning("Aucun skill disponible dans " + base)
 		return
 	}
-	fmt.Println()
-	for _, f := range files {
-		if f.Err != nil {
-			ui.PrintError(fmt.Sprintf("Fichier '%s' — %s", f.Name, f.Err.Error()))
-		} else {
-			ui.PrintSuccess(fmt.Sprintf("Fichier créé : %s", f.AbsPath))
+
+	items := make([]ui.MenuItem, len(allSkills))
+	for i, sk := range allSkills {
+		desc := sk.Meta.Description
+		if sk.Meta.Category != "" {
+			desc = "[" + sk.Meta.Category + "] " + desc
 		}
+		items[i] = ui.MenuItem{
+			ID:    sk.Meta.Name,
+			Label: sk.Meta.Name,
+			Desc:  desc,
+		}
+	}
+
+	selected, escaped := ui.RunMultiSelect("Sélectionner les skills actifs", items)
+	if escaped {
+		return
+	}
+
+	s.activeSkills = selected
+	s.history[0] = nimapi.Message{
+		Role:    "system",
+		Content: buildSystemPrompt(s.activeSkills),
+	}
+
+	if len(selected) == 0 {
+		ui.PrintSuccess("Aucun skill actif.")
+	} else {
+		ui.PrintSuccess("Skills actifs : " + strings.Join(selected, ", "))
 	}
 }
 
-func printChatWelcome(activeSkills []string) {
-	line := ui.InfoStyle.Render("Session démarrée • ") +
-		ui.CommandStyle.Render("/help") +
-		ui.InfoStyle.Render(" pour les commandes • ") +
+func (s *ChatSession) printWelcome() {
+	line := ui.InfoStyle.Render("Tapez ") +
+		ui.CommandStyle.Render("/") +
+		ui.InfoStyle.Render(" pour ouvrir le menu des commandes • ") +
 		ui.CommandStyle.Render("/quit") +
 		ui.InfoStyle.Render(" pour quitter")
 
-	if len(activeSkills) > 0 {
-		line += "\n" + ui.InfoStyle.Render("Skills actifs : ") + ui.SuccessStyle.Render(strings.Join(activeSkills, ", "))
+	if len(s.activeSkills) > 0 {
+		line += "\n" + ui.InfoStyle.Render("Skills actifs : ") + ui.SuccessStyle.Render(strings.Join(s.activeSkills, ", "))
 	}
 	fmt.Println(line)
-}
-
-func printChatHelp() {
-	fmt.Println()
-	fmt.Println(ui.SectionTitleStyle.Render("  Commandes disponibles dans le chat"))
-	fmt.Println()
-
-	cmds := []struct{ cmd, desc string }{
-		{"/quit ou /q", "Quitter la session"},
-		{"/clear", "Effacer l'historique de conversation"},
-		{"/history", "Afficher l'historique de la session"},
-		{"/model [id]", "Voir ou changer le modèle actif"},
-		{"/stream", "Basculer le mode streaming on/off"},
-		{"/system [msg]", "Voir ou modifier le message système"},
-		{"/save", "Sauvegarder l'historique dans un fichier"},
-		{"/title", "Afficher le titre et le dossier de la session"},
-		{"/skill list", "Lister les skills disponibles"},
-		{"/skill add <nom>", "Activer un skill"},
-		{"/skill remove <nom>", "Désactiver un skill"},
-		{"/help", "Afficher cette aide"},
-	}
-
-	for _, c := range cmds {
-		fmt.Printf("%s %s\n",
-			ui.CommandStyle.Render(fmt.Sprintf("  %-26s", c.cmd)),
-			ui.InfoStyle.Render(c.desc),
-		)
-	}
-	fmt.Println()
 }
 
 func (s *ChatSession) printHistory() {
@@ -518,9 +466,7 @@ func (s *ChatSession) saveHistory() error {
 		return fmt.Errorf("impossible de créer le dossier : %w", err)
 	}
 
-	filename := fmt.Sprintf("historique_%s.txt", time.Now().Format("20060102_150405"))
-	path := s.sessionDir + "/" + filename
-
+	path := filepath.Join(s.sessionDir, fmt.Sprintf("historique_%s.txt", time.Now().Format("20060102_150405")))
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -530,6 +476,9 @@ func (s *ChatSession) saveHistory() error {
 	fmt.Fprintf(f, "Session NVIDIA NIM — %s\n", s.title)
 	fmt.Fprintf(f, "Démarré : %s\n", s.started.Format("02/01/2006 15:04:05"))
 	fmt.Fprintf(f, "Modèle : %s\n", s.model)
+	if len(s.activeSkills) > 0 {
+		fmt.Fprintf(f, "Skills : %s\n", strings.Join(s.activeSkills, ", "))
+	}
 	fmt.Fprintf(f, "Messages : %d\n", s.msgCount)
 	fmt.Fprintf(f, "%s\n\n", strings.Repeat("─", 60))
 
@@ -543,7 +492,6 @@ func (s *ChatSession) saveHistory() error {
 		}
 		fmt.Fprintf(f, "[%s]\n%s\n\n", role, msg.Content)
 	}
-
 	return nil
 }
 
