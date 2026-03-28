@@ -39,13 +39,17 @@ var skillsDeleteCmd = &cobra.Command{
 }
 
 var (
-	skillNewDesc   string
-	skillNewPrompt string
+	skillNewDesc     string
+	skillNewPrompt   string
+	skillNewCategory string
+	skillNewAuthor   string
 )
 
 func init() {
 	skillsNewCmd.Flags().StringVarP(&skillNewDesc, "desc", "d", "", "Description courte du skill")
-	skillsNewCmd.Flags().StringVarP(&skillNewPrompt, "prompt", "p", "", "Contenu du prompt système")
+	skillsNewCmd.Flags().StringVarP(&skillNewPrompt, "prompt", "p", "", "Instructions système du skill")
+	skillsNewCmd.Flags().StringVarP(&skillNewCategory, "category", "c", "", "Catégorie du skill")
+	skillsNewCmd.Flags().StringVarP(&skillNewAuthor, "author", "a", "", "Auteur du skill")
 
 	skillsCmd.AddCommand(skillsNewCmd)
 	skillsCmd.AddCommand(skillsShowCmd)
@@ -59,36 +63,58 @@ func runSkillsList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	dir, _ := skills.Dir()
+	base, _ := skills.BaseDir()
 	fmt.Println()
 	fmt.Println(ui.SectionTitleStyle.Render("  ◆ Skills NVIDIA NIM CLI"))
-	fmt.Println(ui.InfoStyle.Render("  Dossier : " + dir))
+	fmt.Println(ui.InfoStyle.Render("  Dossier : " + base))
 	fmt.Println(ui.Divider(60))
 	fmt.Println()
 
 	if len(allSkills) == 0 {
 		fmt.Println(ui.InfoStyle.Render("  Aucun skill trouvé."))
 		fmt.Println()
+		fmt.Println(ui.InfoStyle.Render("  Structure d'un skill :"))
+		fmt.Println(ui.CommandStyle.Render("    " + base + "\\mon-skill\\"))
+		fmt.Println(ui.InfoStyle.Render("      skill.yaml   ← métadonnées + prompt"))
+		fmt.Println(ui.InfoStyle.Render("      README.md    ← contexte détaillé"))
+		fmt.Println(ui.InfoStyle.Render("      assets\\      ← fichiers de référence"))
+		fmt.Println()
 		fmt.Println(ui.InfoStyle.Render("  Créer un skill :"))
-		fmt.Println(ui.CommandStyle.Render(`    nim skills new mon-skill --desc "Mon expert" --prompt "Tu es un expert en..."`))
+		fmt.Println(ui.CommandStyle.Render(`    nim skills new mon-skill --desc "Expert Python" --prompt "Tu es un expert Python..."`))
 		fmt.Println()
 		return nil
 	}
 
 	for _, sk := range allSkills {
-		fmt.Printf("  %s\n", ui.CommandStyle.Render(sk.Name))
-		fmt.Printf("  %s\n", ui.InfoStyle.Render(sk.Description))
-		preview := sk.Prompt
-		if len(preview) > 100 {
-			preview = preview[:100] + "..."
+		fmt.Printf("  %s", ui.CommandStyle.Render(sk.Meta.Name))
+		if sk.Meta.Version != "" {
+			fmt.Printf("  %s", ui.TimestampStyle.Render("v"+sk.Meta.Version))
 		}
-		fmt.Printf("  %s\n\n", ui.TimestampStyle.Render(preview))
+		if sk.Meta.Category != "" {
+			fmt.Printf("  %s", ui.ModelStyle.Render("["+sk.Meta.Category+"]"))
+		}
+		fmt.Println()
+
+		if sk.Meta.Description != "" {
+			fmt.Printf("  %s\n", ui.InfoStyle.Render(sk.Meta.Description))
+		}
+		if sk.Meta.Author != "" {
+			fmt.Printf("  %s\n", ui.InfoStyle.Render("Auteur : "+sk.Meta.Author))
+		}
+		if len(sk.Meta.Tags) > 0 {
+			fmt.Printf("  %s\n", ui.InfoStyle.Render("Tags : "+strings.Join(sk.Meta.Tags, ", ")))
+		}
+
+		hasReadme := sk.Readme != ""
+		fmt.Printf("  %s  %s\n",
+			ui.InfoStyle.Render("README.md :"),
+			boolLabel(hasReadme),
+		)
+		fmt.Println()
 	}
 
 	fmt.Println(ui.Divider(60))
-	fmt.Println(ui.InfoStyle.Render(fmt.Sprintf("  %d skill(s) disponible(s)", len(allSkills))))
-	fmt.Println()
-	fmt.Println(ui.InfoStyle.Render("  Activer dans une session : ") + ui.CommandStyle.Render("nim chat -k <nom>"))
+	fmt.Println(ui.InfoStyle.Render(fmt.Sprintf("  %d skill(s) • Activer avec : ", len(allSkills))) + ui.CommandStyle.Render("nim chat"))
 	fmt.Println()
 	return nil
 }
@@ -96,27 +122,33 @@ func runSkillsList(cmd *cobra.Command, args []string) error {
 func runSkillsNew(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
-	desc := skillNewDesc
-	if desc == "" {
-		desc = name
-	}
-
-	prompt := skillNewPrompt
-	if prompt == "" {
+	if skillNewPrompt == "" {
 		ui.PrintError("Le prompt est requis. Utilisez --prompt \"Tu es un expert en...\"")
 		return nil
 	}
 
-	content := fmt.Sprintf("# %s\n\n## Prompt\n\n%s\n", desc, prompt)
+	meta := skills.Meta{
+		Name:        name,
+		Description: skillNewDesc,
+		Category:    skillNewCategory,
+		Author:      skillNewAuthor,
+		Version:     "1.0",
+		Prompt:      skillNewPrompt,
+	}
 
-	if err := skills.Save(name, content); err != nil {
+	if err := skills.Create(name, meta); err != nil {
 		ui.PrintError("Impossible de créer le skill : " + err.Error())
 		return nil
 	}
 
-	dir, _ := skills.Dir()
-	ui.PrintSuccess(fmt.Sprintf("Skill '%s' créé dans %s/%s.md", name, dir, name))
-	fmt.Println(ui.InfoStyle.Render("  Activer avec : ") + ui.CommandStyle.Render("nim chat -k "+name))
+	base, _ := skills.BaseDir()
+	ui.PrintSuccess(fmt.Sprintf("Skill '%s' créé dans %s\\%s\\", name, base, name))
+	fmt.Println(ui.InfoStyle.Render("  Fichiers créés :"))
+	fmt.Println(ui.CommandStyle.Render(fmt.Sprintf("    %s\\%s\\skill.yaml", base, name)))
+	fmt.Println(ui.CommandStyle.Render(fmt.Sprintf("    %s\\%s\\README.md", base, name)))
+	fmt.Println(ui.CommandStyle.Render(fmt.Sprintf("    %s\\%s\\assets\\", base, name)))
+	fmt.Println()
+	fmt.Println(ui.InfoStyle.Render("  Activer au démarrage : ") + ui.CommandStyle.Render("nim chat"))
 	return nil
 }
 
@@ -129,11 +161,47 @@ func runSkillsShow(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Println(ui.SectionTitleStyle.Render("  Skill : " + sk.Name))
-	fmt.Println(ui.InfoStyle.Render("  " + sk.Description))
+	fmt.Println(ui.SectionTitleStyle.Render("  Skill : " + sk.Meta.Name))
+	if sk.Meta.Description != "" {
+		fmt.Println(ui.InfoStyle.Render("  " + sk.Meta.Description))
+	}
 	fmt.Println(ui.Divider(60))
-	fmt.Println()
-	fmt.Println(sk.Prompt)
+
+	if sk.Meta.Category != "" {
+		fmt.Println(ui.InfoStyle.Render("  Catégorie : ") + sk.Meta.Category)
+	}
+	if sk.Meta.Author != "" {
+		fmt.Println(ui.InfoStyle.Render("  Auteur    : ") + sk.Meta.Author)
+	}
+	if sk.Meta.Version != "" {
+		fmt.Println(ui.InfoStyle.Render("  Version   : ") + sk.Meta.Version)
+	}
+	if len(sk.Meta.Tags) > 0 {
+		fmt.Println(ui.InfoStyle.Render("  Tags      : ") + strings.Join(sk.Meta.Tags, ", "))
+	}
+
+	if sk.Meta.Prompt != "" {
+		fmt.Println()
+		fmt.Println(ui.CommandStyle.Render("  Prompt système :"))
+		fmt.Println(sk.Meta.Prompt)
+	}
+
+	if sk.Readme != "" {
+		fmt.Println()
+		fmt.Println(ui.CommandStyle.Render("  README :"))
+		lines := strings.Split(sk.Readme, "\n")
+		limit := 20
+		if len(lines) < limit {
+			limit = len(lines)
+		}
+		for _, l := range lines[:limit] {
+			fmt.Println("  " + l)
+		}
+		if len(lines) > 20 {
+			fmt.Println(ui.InfoStyle.Render(fmt.Sprintf("  ... (%d lignes supplémentaires)", len(lines)-20)))
+		}
+	}
+
 	fmt.Println()
 	return nil
 }
@@ -141,7 +209,7 @@ func runSkillsShow(cmd *cobra.Command, args []string) error {
 func runSkillsDelete(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
-	fmt.Print(ui.WarningStyle.Render(fmt.Sprintf("Supprimer le skill '%s' ? (oui/non) : ", name)))
+	fmt.Print(ui.WarningStyle.Render(fmt.Sprintf("Supprimer le skill '%s' et tous ses fichiers ? (oui/non) : ", name)))
 
 	var confirm string
 	fmt.Fscan(os.Stdin, &confirm)
@@ -158,4 +226,11 @@ func runSkillsDelete(cmd *cobra.Command, args []string) error {
 
 	ui.PrintSuccess(fmt.Sprintf("Skill '%s' supprimé.", name))
 	return nil
+}
+
+func boolLabel(v bool) string {
+	if v {
+		return ui.SuccessStyle.Render("✓ présent")
+	}
+	return ui.InfoStyle.Render("absent")
 }
