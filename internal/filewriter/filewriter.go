@@ -3,7 +3,6 @@ package filewriter
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -17,29 +16,24 @@ type FileResult struct {
 	Err     error
 }
 
-func cliDir() string {
-	exe, err := os.Executable()
-	if err == nil {
-		return filepath.Dir(exe)
+func baseDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "C:\\Users\\Default"
 	}
-	self, err := exec.LookPath(os.Args[0])
-	if err == nil {
-		abs, err := filepath.Abs(self)
-		if err == nil {
-			return filepath.Dir(abs)
-		}
-	}
-	abs, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-	return abs
+	return filepath.Join(home, "NIM_CLI")
 }
 
 func FilesDir() string {
-	return filepath.Join(cliDir(), "files")
+	return filepath.Join(baseDir(), "files")
+}
+
+func SkillsDir() string {
+	return filepath.Join(baseDir(), "skills")
 }
 
 func SessionDir(title string) string {
-	safe := sanitizeTitle(title)
-	return filepath.Join(FilesDir(), safe)
+	return filepath.Join(FilesDir(), sanitizeTitle(title))
 }
 
 func ExtractAndWrite(response, sessionDir string) (string, []FileResult) {
@@ -98,15 +92,8 @@ func writeFile(rawName, content, sessionDir string) FileResult {
 func sanitizeTitle(title string) string {
 	title = strings.TrimSpace(title)
 	replacer := strings.NewReplacer(
-		"/", "-",
-		"\\", "-",
-		":", "-",
-		"*", "-",
-		"?", "",
-		"\"", "",
-		"<", "",
-		">", "",
-		"|", "-",
+		"/", "-", "\\", "-", ":", "-", "*", "-",
+		"?", "", "\"", "", "<", "", ">", "", "|", "-",
 	)
 	title = replacer.Replace(title)
 	title = strings.Join(strings.Fields(title), "_")
